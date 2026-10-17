@@ -28,6 +28,20 @@ describe('context band', () => {
     expect(compacted).toBe(2)
   })
 
+  test('a new measurement redraws the footer', async ($, on) => {
+    on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 46000, window: 200000, percent: 23 } } }))
+    on('session.measure', (_$, e) => ({ changed: e.changed }))
+    const ui = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    expect(JSON.stringify(await ui.find({ key: 'menu' }))).toContain('Context 23%')
+    await $.session.measure({
+      context: { tokens: 56000, window: 200000, percent: 28 },
+      rateLimits: [],
+      changed: ['context'],
+    })
+    expect(JSON.stringify(await ui.find({ key: 'menu' }))).toContain('Context 28%')
+    await ui.unmount()
+  })
+
   test('footer draws the engine line while no reading exists', async ($, on) => {
     on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200000 } } }))
     on('ui.render', ($, e) => {

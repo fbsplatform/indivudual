@@ -13,6 +13,26 @@ const warned = atom({ plugin: 'context-band', key: 'warned' } as const, false)
 const busy = atom({ plugin: 'context-band', key: 'busy' } as const, false)
 const menuOpen = atom({ plugin: 'context-band', key: 'menuOpen' } as const, false)
 const compactAfterTurn = atom({ plugin: 'context-band', key: 'compactAfterTurn' } as const, false)
+// The last measured fill. Drawings read it, so a new measurement redraws them.
+const reading = atom(
+  { plugin: 'context-band', key: 'reading' } as const,
+  null as { percent: number | null; tokens: number | null; window: number } | null,
+)
+
+type Reading = { percent: number | null; tokens: number | null; window: number }
+
+function toReading(context: { percent?: number; tokens?: number; window: number }): Reading {
+  return { percent: context.percent ?? null, tokens: context.tokens ?? null, window: context.window }
+}
+
+async function currentReading($: EngineInterface): Promise<Reading> {
+  return (await read($, reading)) ?? toReading((await $.session.usage()).context)
+}
+
+async function refreshReading($: EngineInterface) {
+  const fresh = toReading((await $.session.usage()).context)
+  await update($, reading, () => fresh)
+}
 
 function tone(percent: number) {
   return percent >= WARN_AT ? 'error' : percent >= SUGGEST_AT ? 'warning' : 'text'
@@ -40,9 +60,22 @@ async function compact($: EngineInterface, instructions?: string) {
   await update($, menuOpen, () => false)
   await update($, busy, () => true)
   try {
-    const r = await $.session.compact(instructions ? { instructions } : undefined)
-    $.ui.toast(r.skip ? `Compact skipped: ${r.skip}` : 'Context compacted')
-    await update($, warned, () => false)
+    // compact rejects while a turn runs; the turn that just ended may still be
+    // closing, so give it a few seconds before giving up.
+    let lastError: unknown
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        const r = await $.session.compact(instructions ? { instructions } : undefined)
+        $.ui.toast(r.skip ? `Compact skipped: ${r.skip}` : 'Context compacted')
+        await update($, warned, () => false)
+        await refreshReading($)
+        return
+      } catch (err) {
+        lastError = err
+        await $.clock.sleep(1500)
+      }
+    }
+    $.ui.toast(`Compact failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
   } finally {
     await update($, busy, () => false)
   }
@@ -68,8 +101,8 @@ export const register: Register = on => {
     const result = await next(e)
     if (await read($, compactAfterTurn)) {
       await update($, compactAfterTurn, () => false)
-      // Not awaited: the compaction runs once the session is idle again.
-      void compact($, KEEP_PLAN)
+      // Outside this hook: the compaction runs once the turn has closed.
+      $.clock.after(1000, () => void compact($, KEEP_PLAN))
       return result
     }
     const percent = (await $.session.usage()).context.percent ?? 0
@@ -83,14 +116,20 @@ export const register: Register = on => {
     return result
   })
 
+  // Pushed after each turn: store it so both drawings redraw with the new fill.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('context')) await update($, reading, () => toReading(e.context))
+    return next(e)
+  })
+
   // The prompt footer, between the permission mode and the model: no frame of
   // its own. The label itself is the button that toggles the menu in place.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     // The plain call is free: the status line's own figures, no API request.
-    const { context } = await $.session.usage()
-    if (context.percent === undefined) return next(e)
+    const now = await currentReading($)
+    if (now.percent === null) return next(e)
 
-    const percent = context.percent
+    const percent = now.percent
     const label = percent >= SUGGEST_AT ? `Context ${percent}% · compact?` : `Context ${percent}%`
     const { Box, Button, Text } = $.ui.resolve(e)
 
@@ -112,11 +151,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || !(await read($, menuOpen))) return next(e)
 
-    const { context } = await $.session.usage()
-    const percent = context.percent ?? 0
+    const now = await currentReading($)
+    const percent = now.percent ?? 0
     const isBusy = await read($, busy)
-    const tokensK = context.tokens !== undefined ? Math.round(context.tokens / 1000) : undefined
-    const windowK = Math.round(context.window / 1000)
+    const tokensK = now.tokens !== null ? Math.round(now.tokens / 1000) : undefined
+    const windowK = Math.round(now.window / 1000)
     const els = $.ui.resolve(e)
     const { Box, Button, Text } = els
 
