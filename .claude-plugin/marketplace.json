@@ -1,5 +1,5 @@
 {
-  "name": "local-mods",
+  "name": "indivudual",
   "owner": { "name": "FBS" },
   "plugins": [{ "name": "context-band", "source": "./context-band" }]
 }
