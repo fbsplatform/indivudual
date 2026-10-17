@@ -1,0 +1,1 @@
+{ "name": "context-band", "version": "0.1.0", "description": "Bağlam doluluk yüzdesi, Compact düğmesi ve ⋯ menüsü (giriş alanının üstünde)", "types": "./types/index.d.ts" }
